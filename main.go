@@ -184,6 +184,8 @@ func newUserHandler(ctx *fasthttp.RequestCtx) {
 	json.Unmarshal(ctx.PostBody(), &u)
 
 	u2 := getUserByEmail(u.Email)
+
+	log.Println("u2.Email == u.Email", u2.Email, u.Email)
 	if u2.Email == u.Email {
 		ctx.Response.SetStatusCode(fasthttp.StatusConflict)
 		fmt.Fprintln(ctx, "An user with that email already exists")
@@ -263,6 +265,7 @@ func newChatHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	for _, c2 := range u.Chats {
+		log.Println("c2.Name == c.Name", c2.Name, c.Name)
 		if c2.Name == c.Name {
 			ctx.Response.SetStatusCode(fasthttp.StatusConflict)
 			fmt.Fprintln(ctx, "A chat with that name already exists")
