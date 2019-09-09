@@ -182,6 +182,13 @@ func newUserHandler(ctx *fasthttp.RequestCtx) {
 	var u user
 	json.Unmarshal(ctx.PostBody(), &u)
 
+	u2 := getUserByEmail(u.Email)
+	if u2.Email == u.Email {
+		ctx.Response.SetStatusCode(fasthttp.StatusConflict)
+		fmt.Fprintln(ctx, "An user with that email already exists")
+		return
+	}
+
 	pwd, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
 	if okError(ctx, err) {
 		return
@@ -228,6 +235,14 @@ func newChatHandler(ctx *fasthttp.RequestCtx) {
 	err := json.Unmarshal(ctx.PostBody(), &c)
 	if okError(ctx, err) {
 		return
+	}
+
+	for _, c2 := range u.Chats {
+		if c2.Name == c.Name {
+			ctx.Response.SetStatusCode(fasthttp.StatusConflict)
+			fmt.Fprintln(ctx, "A chat with that name already exists")
+			return
+		}
 	}
 
 	members := []user{}
