@@ -71,6 +71,7 @@ func main() {
 	r.GET("/logged", loggedHandler)
 	r.GET("/logout", logoutHandler)
 	r.GET("/users", usersHandler)
+	r.GET("/me", meHandler)
 
 	r.OPTIONS("/login", cors)
 	r.OPTIONS("/newuser", cors)
@@ -207,10 +208,34 @@ func usersHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	u := getUser(ctx)
+
 	users := []user{}
 	db.Find(&users)
 
+	for i, uu := range users {
+		if uu.Email == u.Email {
+			users = append(users[:i], users[i+1:]...)
+		}
+	}
+
 	b, err := json.Marshal(users)
+	if okError(ctx, err) {
+		return
+	}
+
+	fmt.Fprintf(ctx, "%v", string(b))
+}
+
+func meHandler(ctx *fasthttp.RequestCtx) {
+	setCorsHeaders(ctx)
+	if isNotLogged(ctx) {
+		return
+	}
+
+	u := getUser(ctx)
+
+	b, err := json.Marshal(u)
 	if okError(ctx, err) {
 		return
 	}
