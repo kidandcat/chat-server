@@ -77,6 +77,7 @@ func main() {
 	r.OPTIONS("/newuser", cors)
 	r.OPTIONS("/newchat", cors)
 	r.OPTIONS("/newmessage", cors)
+	r.OPTIONS("/chats", cors)
 
 	log.Fatal(fasthttp.ListenAndServe(":8081", r.Handler))
 }
