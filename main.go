@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 
 	"github.com/fasthttp/router"
@@ -30,6 +31,7 @@ type user struct {
 	Name             string `json:"name"`
 	Email            string `json:"email"`
 	Password         string `json:"password"`
+	Avatar           string `json:"avatar"`
 	RegistrationDate string `json:"registrationDate"`
 	Chats            []chat `gorm:"many2many:user_chats;"`
 }
@@ -37,10 +39,12 @@ type user struct {
 type chatRequest struct {
 	Name    string   `json:"name"`
 	Members []string `json:"members"`
+	Avatar  string   `json:"avatar"`
 }
 
 type chat struct {
 	gorm.Model
+	Avatar   string    `json:"avatar"`
 	Name     string    `json:"name"`
 	Members  []user    `json:"members" gorm:"many2many:user_chats;"`
 	Messages []message `gorm:"foreignkey:ChatID"`
@@ -186,7 +190,6 @@ func newUserHandler(ctx *fasthttp.RequestCtx) {
 
 	u2 := getUserByEmail(u.Email)
 
-	log.Println("u2.Email == u.Email", u2.Email, u.Email)
 	if u2.Email == u.Email {
 		ctx.Response.SetStatusCode(fasthttp.StatusConflict)
 		fmt.Fprintln(ctx, "An user with that email already exists")
@@ -265,20 +268,32 @@ func newChatHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	for _, c2 := range u.Chats {
-		log.Println("c2.Name == c.Name", c2.Name, c.Name)
-		if c2.Name == c.Name {
-			ctx.Response.SetStatusCode(fasthttp.StatusConflict)
-			fmt.Fprintln(ctx, "A chat with that name already exists")
-			return
-		}
-	}
-
 	members := []user{}
 	db.Where("email IN (?)", c.Members).Find(&members)
 	ch := chat{
 		Name:    c.Name,
-		Members: members,
+		Members: append(members, u),
+		Avatar:  c.Avatar,
+	}
+
+	if len(ch.Members) == 2 {
+		sort.Slice(ch.Members, func(i, j int) bool {
+			return ch.Members[i].Name < ch.Members[j].Name
+		})
+		name := ""
+		for _, m := range ch.Members {
+			fmt.Printf("%v", m.Name)
+			name += m.Name
+		}
+		ch.Name = name
+	}
+
+	for _, c2 := range u.Chats {
+		if c2.Name == ch.Name {
+			ctx.Response.SetStatusCode(fasthttp.StatusConflict)
+			fmt.Fprintln(ctx, "A chat with that name already exists")
+			return
+		}
 	}
 
 	u.Chats = append(u.Chats, ch)
@@ -295,6 +310,21 @@ func chatsHandler(ctx *fasthttp.RequestCtx) {
 	u := getUser(ctx)
 
 	db.Model(&u).Related(&chats, "Chats")
+
+	for k, v := range chats {
+		for i, m := range v.Members {
+			if m.ID == u.ID {
+				if i == 0 {
+					v.Name = v.Members[1].Name
+					v.Avatar = v.Members[1].Avatar
+				} else {
+					v.Name = v.Members[0].Name
+					v.Avatar = v.Members[0].Avatar
+				}
+				chats[k] = v
+			}
+		}
+	}
 
 	b, err := json.Marshal(chats)
 	if okError(ctx, err) {
