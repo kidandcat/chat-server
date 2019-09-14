@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"sort"
@@ -411,16 +412,17 @@ func (u *user) notifyUser() {
 	}`)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
-	req.Header.Set("Authorization", "Basic "+API_KEY)
+	//req.Header.Set("Authorization", "Basic "+API_KEY)
 	req.Header.Set("Content-Type", "Content-Type: application/json; charset=utf-8")
-
-	fmt.Println(API_KEY, string(jsonStr))
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		panic(err)
 	}
+	defer resp.Body.Close()
 
 	fmt.Println("response Status:", resp.Status)
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Println(API_KEY, string(jsonStr), string(body))
 }
