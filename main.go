@@ -177,6 +177,10 @@ func loginHandler(ctx *fasthttp.RequestCtx) {
 		c.SetValue(u.Email)
 		ctx.Response.Header.SetCookie(c)
 		ctx.Response.SetStatusCode(fasthttp.StatusOK)
+
+		u.PushToken = l.PushToken
+
+		db.Save(&u)
 		return
 	}
 	fmt.Println("passwords not match, rejected!")
@@ -407,7 +411,7 @@ func (u *user) notifyUser() {
 	}`)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
-	req.Header.Set("Authorization", "Basic "+u.PushToken)
+	req.Header.Set("Authorization", "Basic "+API_KEY)
 	req.Header.Set("Content-Type", "Content-Type: application/json; charset=utf-8")
 
 	fmt.Println(API_KEY, string(jsonStr))
