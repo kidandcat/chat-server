@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strconv"
 
@@ -14,6 +16,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const API_KEY = "MmEwOTczMDEtMDJhYS00NWFlLTg1YmItZDhmZDg2ZWM3YjJj"
+
 type message struct {
 	gorm.Model
 	Text   string `json:"text"`
@@ -22,8 +26,9 @@ type message struct {
 }
 
 type login struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	PushToken string `json:"pushToken"`
 }
 
 type user struct {
@@ -31,6 +36,7 @@ type user struct {
 	Name             string `json:"name"`
 	Email            string `json:"email"`
 	Password         string `json:"password"`
+	PushToken        string `json:"pushToken"`
 	Avatar           string `json:"avatar"`
 	RegistrationDate string `json:"registrationDate"`
 	Chats            []chat `gorm:"many2many:user_chats;"`
@@ -358,6 +364,12 @@ func newMessageHandler(ctx *fasthttp.RequestCtx) {
 	u := getUser(ctx)
 	m.Author = u.ID
 
+	for _, member := range c.Members {
+		if m.Author != member.ID {
+			member.notifyUser()
+		}
+	}
+
 	db.Model(&c).Association("Messages").Append(&m)
 
 	okError(ctx, err)
@@ -383,4 +395,26 @@ func messagesHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	ctx.Response.Header.Set("Content-Type", "application/json")
+}
+
+func (u *user) notifyUser() {
+	url := "https://onesignal.com/api/v1/notifications"
+
+	var jsonStr = []byte(`{
+		"app_id": "3e33e029-dbbf-4915-8c23-0ee2018fbb7a",
+		"contents": {"en": "Tienes un nuevo mensaje"},
+		"included_segments": ["Subscribed Users"]
+	}`)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
+	req.Header.Set("Authorization", "Basic "+API_KEY)
+	req.Header.Set("Content-Type", "Content-Type: application/json; charset=utf-8")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("response Status:", resp.Status)
 }
