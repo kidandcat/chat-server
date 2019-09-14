@@ -410,6 +410,8 @@ func (u *user) notifyUser() {
 	req.Header.Set("Authorization", "Basic "+API_KEY)
 	req.Header.Set("Content-Type", "Content-Type: application/json; charset=utf-8")
 
+	fmt.Println(API_KEY, jsonStr)
+
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
