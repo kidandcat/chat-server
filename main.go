@@ -371,7 +371,7 @@ func newMessageHandler(ctx *fasthttp.RequestCtx) {
 
 	for _, member := range c.Members {
 		if m.Author != member.ID {
-			member.notifyUser()
+			member.notifyUser(m.Text)
 		}
 	}
 
@@ -402,7 +402,7 @@ func messagesHandler(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set("Content-Type", "application/json")
 }
 
-func (u *user) notifyUser() {
+func (u *user) notifyUser(text string) {
 	url := "https://onesignal.com/api/v1/notifications"
 
 	var jsonStr = []byte(`{
