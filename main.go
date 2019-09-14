@@ -403,7 +403,7 @@ func (u *user) notifyUser() {
 	var jsonStr = []byte(`{
 		"app_id": "3e33e029-dbbf-4915-8c23-0ee2018fbb7a",
 		"contents": {"en": "Tienes un nuevo mensaje"},
-		"included_segments": ["Subscribed Users"]
+		"include_player_ids": ["` + u.PushToken + `"]
 	}`)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
