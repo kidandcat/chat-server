@@ -412,8 +412,8 @@ func (u *user) notifyUser() {
 	}`)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
-	//req.Header.Set("Authorization", "Basic "+API_KEY)
-	req.Header.Set("Content-Type", "Content-Type: application/json; charset=utf-8")
+	req.Header.Set("Authorization", "Basic "+API_KEY)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
