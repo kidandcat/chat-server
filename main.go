@@ -407,10 +407,10 @@ func (u *user) notifyUser() {
 	}`)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
-	req.Header.Set("Authorization", "Basic "+API_KEY)
+	req.Header.Set("Authorization", "Basic "+u.PushToken)
 	req.Header.Set("Content-Type", "Content-Type: application/json; charset=utf-8")
 
-	fmt.Println(API_KEY, jsonStr)
+	fmt.Println(API_KEY, string(jsonStr))
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
