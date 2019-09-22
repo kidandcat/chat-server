@@ -8,28 +8,45 @@ import (
 	"log"
 	"net/http"
 	"sort"
-	"strconv"
+	"time"
 
+	"github.com/dgrijalva/jwt-go"
 	"github.com/fasthttp/router"
+	"github.com/fasthttp/websocket"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
+	"github.com/mitchellh/mapstructure"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/crypto/bcrypt"
 )
 
 const API_KEY = "MmEwOTczMDEtMDJhYS00NWFlLTg1YmItZDhmZDg2ZWM3YjJj"
 
+var JWT_SECRET = []byte("wa wa waa")
+
+var sockets = map[string]*websocket.Conn{}
+
+var upgrader = websocket.FastHTTPUpgrader{
+	CheckOrigin: func(ctx *fasthttp.RequestCtx) bool {
+		return true
+	},
+}
+
 type message struct {
 	gorm.Model
 	Text   string `json:"text"`
 	Author uint   `json:"author"`
-	ChatID uint
+	ChatID uint   `json:"chatID"`
 }
 
 type login struct {
 	Email     string `json:"email"`
 	Password  string `json:"password"`
 	PushToken string `json:"pushToken"`
+}
+
+type jwtRequest struct {
+	Token string `json:"token"`
 }
 
 type user struct {
@@ -73,44 +90,9 @@ func main() {
 	db.AutoMigrate(&chat{})
 
 	r := router.New()
-	r.GET("/messages", messagesHandler)
-	r.POST("/newmessage", newMessageHandler)
-	r.GET("/chats", chatsHandler)
-	r.POST("/newchat", newChatHandler)
-	r.POST("/newuser", newUserHandler)
-	r.POST("/login", loginHandler)
-	r.GET("/logged", loggedHandler)
-	r.GET("/logout", logoutHandler)
-	r.GET("/users", usersHandler)
-	r.GET("/me", meHandler)
-
-	r.OPTIONS("/login", cors)
-	r.OPTIONS("/newuser", cors)
-	r.OPTIONS("/newchat", cors)
-	r.OPTIONS("/newmessage", cors)
-	r.OPTIONS("/chats", cors)
+	r.GET("/ws", wsHandler)
 
 	log.Fatal(fasthttp.ListenAndServe(":8081", r.Handler))
-}
-
-/*
-	Helpers Section
-*/
-
-func setCorsHeaders(ctx *fasthttp.RequestCtx) {
-	origin := string(ctx.Request.Header.Peek("origin"))
-	ori := string(ctx.Host())
-	if origin != "" {
-		ori = origin
-	}
-	ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type")
-	ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
-	ctx.Response.Header.Set("Access-Control-Allow-Origin", ori)
-}
-
-func cors(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	ctx.Response.SetStatusCode(fasthttp.StatusOK)
 }
 
 func getUserByEmail(email string) user {
@@ -119,291 +101,12 @@ func getUserByEmail(email string) user {
 	return u
 }
 
-func getUser(ctx *fasthttp.RequestCtx) user {
-	email := string(ctx.Request.Header.Cookie("email"))
-	return getUserByEmail(email)
-}
-
-func isNotLogged(ctx *fasthttp.RequestCtx) bool {
-	lc := ctx.Request.Header.Cookie("email")
-	if string(lc) == "" {
-		ctx.Response.SetStatusCode(fasthttp.StatusUnauthorized)
-		return true
-	}
-	return false
-}
-
-func okError(ctx *fasthttp.RequestCtx, err error) bool {
-	if err != nil {
-		ctx.Response.SetStatusCode(fasthttp.StatusInternalServerError)
-		fmt.Fprintln(ctx, err.Error())
-		return true
-	}
-	ctx.Response.SetStatusCode(fasthttp.StatusOK)
-	return false
-}
-
-/*
-	Login Section
-*/
-
-func logoutHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	ctx.Response.Header.DelClientCookie("email")
-	ctx.Response.SetStatusCode(fasthttp.StatusOK)
-}
-
-func loggedHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	isNotLogged(ctx)
-}
-
-func loginHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	var l login
-	err := json.Unmarshal(ctx.PostBody(), &l)
-	if err != nil {
-		okError(ctx, err)
-		return
-	}
-
-	u := getUserByEmail(l.Email)
-	err = bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(l.Password))
-
-	if err == nil {
-		fmt.Printf("passwords match, logged in, saving email: %v in cookie\n", u.Email)
-		c := fasthttp.AcquireCookie()
-		defer fasthttp.ReleaseCookie(c)
-		c.SetKey("email")
-		c.SetValue(u.Email)
-		ctx.Response.Header.SetCookie(c)
-		ctx.Response.SetStatusCode(fasthttp.StatusOK)
-
-		u.PushToken = l.PushToken
-
-		db.Save(&u)
-		return
-	}
-	fmt.Println("passwords not match, rejected!")
-	ctx.Response.SetStatusCode(fasthttp.StatusUnauthorized)
-}
-
-/*
-	User Section
-*/
-
-func newUserHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-
-	// decode json
-	var u user
-	json.Unmarshal(ctx.PostBody(), &u)
-
-	u2 := getUserByEmail(u.Email)
-
-	if u2.Email == u.Email {
-		ctx.Response.SetStatusCode(fasthttp.StatusConflict)
-		fmt.Fprintln(ctx, "An user with that email already exists")
-		return
-	}
-
-	pwd, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
-	if okError(ctx, err) {
-		return
-	}
-	u.Password = string(pwd)
-
-	// save user
-	db.Create(&u)
-
-	okError(ctx, nil)
-}
-
-func usersHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	if isNotLogged(ctx) {
-		return
-	}
-
-	u := getUser(ctx)
-
-	users := []user{}
-	db.Find(&users)
-
-	for i, uu := range users {
-		if uu.Email == u.Email {
-			users = append(users[:i], users[i+1:]...)
-		}
-	}
-
-	b, err := json.Marshal(users)
-	if okError(ctx, err) {
-		return
-	}
-
-	fmt.Fprintf(ctx, "%v", string(b))
-}
-
-func meHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	if isNotLogged(ctx) {
-		return
-	}
-
-	u := getUser(ctx)
-
-	b, err := json.Marshal(u)
-	if okError(ctx, err) {
-		return
-	}
-
-	fmt.Fprintf(ctx, "%v", string(b))
-}
-
-/*
-	Chats Section
-*/
-
-func newChatHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	if isNotLogged(ctx) {
-		return
-	}
-
-	u := getUser(ctx)
-
-	// decode json
-	var c chatRequest
-	err := json.Unmarshal(ctx.PostBody(), &c)
-	if okError(ctx, err) {
-		return
-	}
-
-	members := []user{}
-	db.Where("email IN (?)", c.Members).Find(&members)
-	ch := chat{
-		Name:    c.Name,
-		Members: append(members, u),
-		Avatar:  c.Avatar,
-	}
-
-	if len(ch.Members) == 2 {
-		sort.Slice(ch.Members, func(i, j int) bool {
-			return ch.Members[i].Name < ch.Members[j].Name
-		})
-		name := ""
-		for _, m := range ch.Members {
-			fmt.Printf("%v", m.Name)
-			name += m.Name
-		}
-		ch.Name = name
-	}
-
-	for _, c2 := range u.Chats {
-		if c2.Name == ch.Name {
-			ctx.Response.SetStatusCode(fasthttp.StatusConflict)
-			fmt.Fprintln(ctx, "A chat with that name already exists")
-			return
-		}
-	}
-
-	u.Chats = append(u.Chats, ch)
-	db.Save(&u)
-}
-
-func chatsHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	if isNotLogged(ctx) {
-		return
-	}
-
-	var chats []chat
-	u := getUser(ctx)
-
-	db.Model(&u).Related(&chats, "Chats")
-
-	for k, v := range chats {
-		for i, m := range v.Members {
-			if m.ID == u.ID {
-				if i == 0 {
-					v.Name = v.Members[1].Name
-					v.Avatar = v.Members[1].Avatar
-				} else {
-					v.Name = v.Members[0].Name
-					v.Avatar = v.Members[0].Avatar
-				}
-				chats[k] = v
-			}
-		}
-	}
-
-	b, err := json.Marshal(chats)
-	if okError(ctx, err) {
-		return
-	}
-
-	fmt.Fprintf(ctx, "%v", string(b))
-}
-
-/*
-	Messages Section
-*/
-
-func newMessageHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	if isNotLogged(ctx) {
-		return
-	}
-
-	id, err := strconv.Atoi(string(ctx.FormValue("id")))
-	if okError(ctx, err) {
-		return
-	}
-
-	c := &chat{}
-	db.First(c, id)
-
-	var m message
-	err = json.Unmarshal(ctx.PostBody(), &m)
-
-	u := getUser(ctx)
-	m.Author = u.ID
-
-	for _, member := range c.Members {
-		if m.Author != member.ID {
-			member.notifyUser(m.Text)
-		}
-	}
-
-	db.Model(&c).Association("Messages").Append(&m)
-
-	okError(ctx, err)
-}
-
-func messagesHandler(ctx *fasthttp.RequestCtx) {
-	setCorsHeaders(ctx)
-	if isNotLogged(ctx) {
-		return
-	}
-
-	id, err := strconv.Atoi(string(ctx.FormValue("id")))
-	if okError(ctx, err) {
-		return
-	}
-
-	c := &chat{}
-	db.First(c, id)
-
-	err = json.NewEncoder(ctx).Encode(c.Messages)
-	if okError(ctx, err) {
-		return
-	}
-
-	ctx.Response.Header.Set("Content-Type", "application/json")
-}
-
 func (u *user) notifyUser(text string) {
 	url := "https://onesignal.com/api/v1/notifications"
+
+	if u.PushToken == "" {
+		return
+	}
 
 	var jsonStr = []byte(`{
 		"app_id": "3e33e029-dbbf-4915-8c23-0ee2018fbb7a",
@@ -425,4 +128,320 @@ func (u *user) notifyUser(text string) {
 	fmt.Println("response Status:", resp.Status)
 	body, _ := ioutil.ReadAll(resp.Body)
 	fmt.Println(API_KEY, string(jsonStr), string(body))
+}
+
+//
+
+//
+
+//
+
+// // // // // // // // // // //
+// WEBSOCKETS IMPLEMENTATION  //
+// // // // // // // // // // //
+
+var users []string
+
+type wsMessage struct {
+	Command string                 `json:"command"`
+	Payload map[string]interface{} `json:"payload"`
+}
+
+func wsHandler(ctx *fasthttp.RequestCtx) {
+	err := upgrader.Upgrade(ctx, func(ws *websocket.Conn) {
+		defer ws.Close()
+		var logged string
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			m := wsRead(msg)
+			switch m.Command {
+			case "newuser":
+				// decode json
+				var u user
+				mapstructure.Decode(m.Payload, &u)
+
+				u2 := getUserByEmail(u.Email)
+
+				if u2.Email == u.Email {
+					wsWrite(ws, wsMessage{
+						Command: "notification",
+						Payload: map[string]interface{}{
+							"isError": true,
+							"msg":     "Ya existe un usuario con el mismo email",
+						},
+					})
+					continue
+				}
+
+				pwd, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+				if err != nil {
+					fmt.Println(err)
+					wsWrite(ws, wsMessage{
+						Command: "notification",
+						Payload: map[string]interface{}{
+							"isError": true,
+							"msg":     err.Error(),
+						},
+					})
+					continue
+				}
+				u.Password = string(pwd)
+
+				// save user
+				db.Create(&u)
+
+				wsWrite(ws, wsMessage{
+					Command: "notification",
+					Payload: map[string]interface{}{
+						"isError": false,
+						"msg":     "Usuario creado!",
+					},
+				})
+			case "login":
+				var l login
+				mapstructure.Decode(m.Payload, &l)
+
+				u := getUserByEmail(l.Email)
+				err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(l.Password))
+
+				if err != nil {
+					fmt.Println("passwords not match, rejected!")
+					wsWrite(ws, wsMessage{
+						Command: "notification",
+						Payload: map[string]interface{}{
+							"isError": false,
+							"msg":     "Tas equivocao",
+						},
+					})
+					continue
+				}
+
+				fmt.Println("passwords match, logged in", u.Email)
+				u.PushToken = l.PushToken
+				db.Save(&u)
+
+				token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+					"email": l.Email,
+					"time":  time.Date(2019, 9, 19, 12, 0, 0, 0, time.UTC).Unix(),
+				})
+
+				t, err := token.SignedString(JWT_SECRET)
+				mw := wsMessage{
+					Command: "jwt",
+					Payload: map[string]interface{}{
+						"token": t,
+					},
+				}
+				wsWrite(ws, mw)
+				logged = u.Email
+				sockets[u.Email] = ws
+			case "jwt":
+				var j jwtRequest
+				mapstructure.Decode(m.Payload, &j)
+
+				token, err := jwt.Parse(j.Token, func(token *jwt.Token) (interface{}, error) {
+					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+						return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+					}
+					return JWT_SECRET, nil
+				})
+
+				if err != nil {
+					fmt.Println("token not valid!")
+					continue
+				}
+
+				var mw wsMessage
+				if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+					//TODO: comprobar fecha valida del token
+					logged = claims["email"].(string)
+					sockets[claims["email"].(string)] = ws
+					mw = wsMessage{
+						Command: "check",
+						Payload: map[string]interface{}{
+							"logged": true,
+						},
+					}
+				} else {
+					mw = wsMessage{
+						Command: "check",
+						Payload: map[string]interface{}{
+							"logged": false,
+						},
+					}
+					fmt.Println(err)
+				}
+				wsWrite(ws, mw)
+			case "users":
+				u := getUserByEmail(logged)
+
+				users := []user{}
+				db.Find(&users)
+
+				for i, uu := range users {
+					if uu.Email == u.Email {
+						users = append(users[:i], users[i+1:]...)
+					}
+				}
+
+				wsWrite(ws, wsMessage{
+					Command: "users",
+					Payload: map[string]interface{}{
+						"users": users,
+					},
+				})
+			case "newmessage":
+				var mm message
+				mapstructure.Decode(m.Payload, &mm)
+
+				c := &chat{}
+				db.First(c, mm.ChatID)
+
+				u := getUserByEmail(logged)
+				mm.Author = u.ID
+
+				db.Model(&c).Association("Messages").Append(&mm)
+
+				for _, member := range c.Members {
+					if mm.Author != member.ID {
+						member.notifyUser(mm.Text)
+					}
+					us, ok := sockets[member.Email]
+					if ok {
+						wsWrite(us, wsMessage{
+							Command: "messages",
+							Payload: map[string]interface{}{
+								"messages": c.Messages,
+							},
+						})
+					}
+				}
+			case "messages":
+				aux := m.Payload["ID"].(float64)
+				id := int(aux)
+
+				c := &chat{}
+				db.First(c, id)
+
+				wsWrite(ws, wsMessage{
+					Command: "messages",
+					Payload: map[string]interface{}{
+						"messages": c.Messages,
+					},
+				})
+			case "newchat":
+				// decode json
+				var c chatRequest
+				mapstructure.Decode(m.Payload, &c)
+
+				u := getUserByEmail(logged)
+
+				members := []user{}
+				db.Where("email IN (?)", c.Members).Find(&members)
+				ch := chat{
+					Name:    c.Name,
+					Members: append(members, u),
+					Avatar:  c.Avatar,
+				}
+
+				if len(ch.Members) == 2 {
+					sort.Slice(ch.Members, func(i, j int) bool {
+						return ch.Members[i].Name < ch.Members[j].Name
+					})
+					name := ""
+					for _, m := range ch.Members {
+						name += m.Name
+					}
+					ch.Name = name
+				}
+
+				for _, c2 := range u.Chats {
+					if c2.Name == ch.Name {
+						wsWrite(ws, wsMessage{
+							Command: "notification",
+							Payload: map[string]interface{}{
+								"isError": true,
+								"msg":     "Ya existe un chat con el mismo nombre",
+							},
+						})
+						continue
+					}
+				}
+
+				u.Chats = append(u.Chats, ch)
+				db.Save(&u)
+			case "chats":
+				var chats []chat
+				u := getUserByEmail(logged)
+
+				db.Model(&u).Related(&chats, "Chats")
+
+				for k, v := range chats {
+					for i, m := range v.Members {
+						if m.ID == u.ID {
+							if i == 0 {
+								v.Name = v.Members[1].Name
+								v.Avatar = v.Members[1].Avatar
+							} else {
+								v.Name = v.Members[0].Name
+								v.Avatar = v.Members[0].Avatar
+							}
+							chats[k] = v
+						}
+					}
+				}
+
+				wsWrite(ws, wsMessage{
+					Command: "chats",
+					Payload: map[string]interface{}{
+						"chats": chats,
+					},
+				})
+			case "me":
+				u := getUserByEmail(logged)
+
+				wsWrite(ws, wsMessage{
+					Command: "me",
+					Payload: map[string]interface{}{
+						"me": u,
+					},
+				})
+			}
+		}
+	})
+
+	if err != nil {
+		if _, ok := err.(websocket.HandshakeError); ok {
+			log.Println(err)
+		}
+		return
+	}
+}
+
+func wsRead(p []byte) wsMessage {
+	var m wsMessage
+	e := json.Unmarshal(p, &m)
+	if e != nil {
+		log.Println("write:", e)
+		return m
+	}
+	fmt.Println("P", string(p))
+	fmt.Printf("WS READ %+v\n", m)
+	return m
+}
+
+func wsWrite(ws *websocket.Conn, m wsMessage) {
+	d, err := json.Marshal(m)
+	if err != nil {
+		log.Println("write:", err)
+	}
+
+	err = ws.WriteMessage(websocket.TextMessage, d)
+	if err != nil {
+		log.Println("write:", err)
+	}
 }
