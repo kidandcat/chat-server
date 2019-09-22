@@ -313,9 +313,9 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 					us, ok := sockets[member.Email]
 					if ok {
 						wsWrite(us, wsMessage{
-							Command: "messages",
+							Command: "message",
 							Payload: map[string]interface{}{
-								"messages": c.Messages,
+								"message": mm,
 							},
 						})
 					}
@@ -381,16 +381,18 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 				db.Model(&u).Related(&chats, "Chats")
 
 				for k, v := range chats {
-					for i, m := range v.Members {
-						if m.ID == u.ID {
-							if i == 0 {
-								v.Name = v.Members[1].Name
-								v.Avatar = v.Members[1].Avatar
-							} else {
-								v.Name = v.Members[0].Name
-								v.Avatar = v.Members[0].Avatar
+					if len(v.Members) == 2 {
+						for i, m := range v.Members {
+							if m.ID == u.ID {
+								if i == 0 {
+									v.Name = v.Members[1].Name
+									v.Avatar = v.Members[1].Avatar
+								} else {
+									v.Name = v.Members[0].Name
+									v.Avatar = v.Members[0].Avatar
+								}
+								chats[k] = v
 							}
-							chats[k] = v
 						}
 					}
 				}
