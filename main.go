@@ -49,15 +49,23 @@ type jwtRequest struct {
 	Token string `json:"token"`
 }
 
+type notification struct {
+	gorm.Model
+	UserID uint `json:"user"`
+	ChatID uint `json:"chat"`
+	Read   bool `json:"read"`
+}
+
 type user struct {
 	gorm.Model
-	Name             string `json:"name"`
-	Email            string `json:"email"`
-	Password         string `json:"password"`
-	PushToken        string `json:"pushToken"`
-	Avatar           string `json:"avatar"`
-	RegistrationDate string `json:"registrationDate"`
-	Chats            []chat `gorm:"many2many:user_chats;"`
+	Name             string         `json:"name"`
+	Email            string         `json:"email"`
+	Password         string         `json:"password"`
+	PushToken        string         `json:"pushToken"`
+	Avatar           string         `json:"avatar"`
+	RegistrationDate string         `json:"registrationDate"`
+	Chats            []chat         `gorm:"many2many:user_chats;"`
+	Notifications    []notification `json:"notifications"`
 }
 
 type chatRequest struct {
@@ -88,6 +96,7 @@ func main() {
 	db.AutoMigrate(&message{})
 	db.AutoMigrate(&user{})
 	db.AutoMigrate(&chat{})
+	db.AutoMigrate(&notification{})
 
 	r := router.New()
 	r.GET("/ws", wsHandler)
@@ -148,6 +157,7 @@ type wsMessage struct {
 }
 
 func wsHandler(ctx *fasthttp.RequestCtx) {
+	fmt.Println("new connection")
 	err := upgrader.Upgrade(ctx, func(ws *websocket.Conn) {
 		defer ws.Close()
 		var logged string
@@ -294,6 +304,26 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 						"users": users,
 					},
 				})
+			case "chatread":
+				u := getUserByEmail(logged)
+
+				var nots []notification
+				db.Where("user_id IN (?) AND chat_id IN (?)", u.ID, m.Payload["ID"]).Find(&nots)
+				fmt.Println("nots of", u.ID, "and", m.Payload["ID"], nots)
+
+				for _, n := range nots {
+					n.Read = true
+					fmt.Println("save not, userID", n.UserID, "read", n.Read)
+					db.Save(n)
+				}
+				db.Where("user_id IN (?)", u.ID).Find(&nots)
+				wsWrite(ws, wsMessage{
+					Command: "notifications",
+					Payload: map[string]interface{}{
+						"notifications": nots,
+					},
+				})
+
 			case "newmessage":
 				var mm message
 				mapstructure.Decode(m.Payload, &mm)
@@ -307,10 +337,28 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 				db.Model(&c).Association("Messages").Append(&mm)
 
 				for _, member := range c.Members {
+					us, ok := sockets[member.Email]
 					if mm.Author != member.ID {
 						member.notifyUser(mm.Text)
+						not := &notification{
+							UserID: member.ID,
+							ChatID: c.ID,
+							Read:   false,
+						}
+						db.Save(not)
+
+						var nots []notification
+						db.Where("user_id IN (?)", member.ID).Find(&nots)
+						//db.Model(member).Related(&nots)
+						if ok {
+							wsWrite(us, wsMessage{
+								Command: "notifications",
+								Payload: map[string]interface{}{
+									"notifications": nots,
+								},
+							})
+						}
 					}
-					us, ok := sockets[member.Email]
 					if ok {
 						wsWrite(us, wsMessage{
 							Command: "message",
@@ -410,6 +458,15 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 					Command: "me",
 					Payload: map[string]interface{}{
 						"me": u,
+					},
+				})
+
+				var nots []notification
+				db.Where("user_id IN (?)", u.ID).Find(&nots)
+				wsWrite(ws, wsMessage{
+					Command: "notifications",
+					Payload: map[string]interface{}{
+						"notifications": nots,
 					},
 				})
 			}
