@@ -215,18 +215,20 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 				m, _, err := image.Decode(reader)
 				if err != nil {
 					log.Println(err)
-				}
+					b64, _ := ioutil.ReadAll(reader)
+					log.Println(b64)
+				} else {
+					newImage := resize.Resize(160, 0, m, resize.Lanczos3)
 
-				newImage := resize.Resize(160, 0, m, resize.Lanczos3)
-
-				// Encode uses a Writer, use a Buffer if you need the raw []byte
-				var buff bytes.Buffer
-				err = jpeg.Encode(bufio.NewWriter(&buff), newImage, nil)
-				if err != nil {
-					log.Println(err)
+					// Encode uses a Writer, use a Buffer if you need the raw []byte
+					var buff bytes.Buffer
+					err = jpeg.Encode(bufio.NewWriter(&buff), newImage, nil)
+					if err != nil {
+						log.Println(err)
+					}
+					encodedString := base64.StdEncoding.EncodeToString(buff.Bytes())
+					u.Avatar = encodedString
 				}
-				encodedString := base64.StdEncoding.EncodeToString(buff.Bytes())
-				u.Avatar = encodedString
 
 				// save user
 				db.Create(&u)
