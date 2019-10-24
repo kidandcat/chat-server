@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
@@ -16,6 +21,7 @@ import (
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"github.com/mitchellh/mapstructure"
+	"github.com/nfnt/resize"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -200,6 +206,20 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 					continue
 				}
 				u.Password = string(pwd)
+
+				reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(u.Avatar))
+				m, _, err := image.Decode(reader)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				newImage := resize.Resize(160, 0, m, resize.Lanczos3)
+
+				// Encode uses a Writer, use a Buffer if you need the raw []byte
+				var buff bytes.Buffer
+				err = jpeg.Encode(bufio.NewWriter(&buff), newImage, nil)
+				encodedString := base64.StdEncoding.EncodeToString(buff.Bytes())
+				u.Avatar = encodedString
 
 				// save user
 				db.Create(&u)
