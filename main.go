@@ -16,6 +16,7 @@ import (
 	"time"
 
 	_ "image/jpeg"
+
 	"github.com/dgrijalva/jwt-go"
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
@@ -211,7 +212,7 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 				reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(u.Avatar))
 				m, _, err := image.Decode(reader)
 				if err != nil {
-					log.Fatal(err)
+					log.Println(err)
 				}
 
 				newImage := resize.Resize(160, 0, m, resize.Lanczos3)
@@ -219,6 +220,9 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 				// Encode uses a Writer, use a Buffer if you need the raw []byte
 				var buff bytes.Buffer
 				err = jpeg.Encode(bufio.NewWriter(&buff), newImage, nil)
+				if err != nil {
+					log.Println(err)
+				}
 				encodedString := base64.StdEncoding.EncodeToString(buff.Bytes())
 				u.Avatar = encodedString
 
