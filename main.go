@@ -211,7 +211,7 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 
 				fmt.Println("Avatar", u.Avatar[0:50])
 
-				reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(u.Avatar))
+				reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(strings.Split(u.Avatar, ",")[1]))
 				m, _, err := image.Decode(reader)
 				if err != nil {
 					log.Println(err)
