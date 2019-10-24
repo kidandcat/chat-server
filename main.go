@@ -426,7 +426,11 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 				var chats []chat
 				u := getUserByEmail(logged)
 
+				log.Println("get chats of", u.Name)
+
 				db.Model(&u).Related(&chats, "Chats")
+
+				log.Println("got all chats")
 
 				for k, v := range chats {
 					if len(v.Members) == 2 {
@@ -444,6 +448,8 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 						}
 					}
 				}
+
+				log.Println("processed all chats")
 
 				wsWrite(ws, wsMessage{
 					Command: "chats",
