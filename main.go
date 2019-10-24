@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	_ "image/jpeg"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
