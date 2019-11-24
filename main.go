@@ -41,10 +41,13 @@ var upgrader = websocket.FastHTTPUpgrader{
 }
 
 type message struct {
-	gorm.Model
-	Text   string `json:"text"`
-	Author uint   `json:"author"`
-	ChatID uint   `json:"chatID"`
+	ID        uint       `gorm:"primary_key" json:"_id"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
+	DeletedAt *time.Time `json:"deletedAt"`
+	Text      string     `json:"text"`
+	User      user       `json:"user"`
+	ChatID    uint       `json:"chatID"`
 }
 
 type login struct {
@@ -65,7 +68,10 @@ type notification struct {
 }
 
 type user struct {
-	gorm.Model
+	ID               uint           `gorm:"primary_key" json:"_id"`
+	CreatedAt        time.Time      `json:"createdAt"`
+	UpdatedAt        time.Time      `json:"updatedAt"`
+	DeletedAt        *time.Time     `json:"deletedAt"`
 	Name             string         `json:"name"`
 	Email            string         `json:"email"`
 	Password         string         `json:"password"`
@@ -362,13 +368,13 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 				db.First(c, mm.ChatID)
 
 				u := getUserByEmail(logged)
-				mm.Author = u.ID
+				mm.User = u
 
 				db.Model(&c).Association("Messages").Append(&mm)
 
 				for _, member := range c.Members {
 					us, ok := sockets[member.Email]
-					if mm.Author != member.ID {
+					if mm.User.ID != member.ID {
 						member.notifyUser(mm.Text)
 						not := &notification{
 							UserID: member.ID,
