@@ -100,21 +100,27 @@ var db *gorm.DB
 
 func main() {
 	var err error
+	fmt.Println("Opening DB")
 	db, err = gorm.Open("sqlite3", "chat.db")
+	fmt.Println("DB Opened")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
+	fmt.Println("Migrate DB")
 	db = db.Set("gorm:auto_preload", true)
 	db.AutoMigrate(&message{})
 	db.AutoMigrate(&user{})
 	db.AutoMigrate(&chat{})
 	db.AutoMigrate(&notification{})
+	fmt.Println("DB Migrated")
 
+	fmt.Println("Setup routing")
 	r := router.New()
 	r.GET("/ws", wsHandler)
 
+	fmt.Println("Listening...")
 	log.Fatal(fasthttp.ListenAndServe(":8081", r.Handler))
 }
 
@@ -214,16 +220,12 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 					continue
 				}
 				u.Password = string(pwd)
-
-				fmt.Println("Avatar", u.Avatar[0:50])
-
 				prevAvatar := strings.Split(u.Avatar, ",")[0]
 				reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(strings.Split(u.Avatar, ",")[1]))
 				m, _, err := image.Decode(reader)
 				if err != nil {
 					log.Println(err)
-					b64, _ := ioutil.ReadAll(reader)
-					log.Println(b64)
+					return
 				} else {
 					newImage := resize.Resize(160, 0, m, resize.Lanczos3)
 
@@ -369,6 +371,8 @@ func wsHandler(ctx *fasthttp.RequestCtx) {
 
 				u := getUserByEmail(logged)
 				mm.User = u
+
+				fmt.Println("User attached to message", mm.User.Name)
 
 				db.Model(&c).Association("Messages").Append(&mm)
 
@@ -530,15 +534,20 @@ func wsRead(p []byte) wsMessage {
 		log.Println("write:", e)
 		return m
 	}
-	fmt.Println("P", string(p))
-	fmt.Printf("WS READ %+v\n", m)
 	return m
 }
 
 func wsWrite(ws *websocket.Conn, m wsMessage) {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println("Error wsWrite", err)
+		}
+	}()
+
 	d, err := json.Marshal(m)
 	if err != nil {
 		log.Println("write:", err)
+		return
 	}
 
 	err = ws.WriteMessage(websocket.TextMessage, d)
