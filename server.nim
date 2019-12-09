@@ -13,11 +13,12 @@ import
   os, 
   strutils, 
   jester,
-  httpclient
+  httpclient,
+  smtp
 
 {.reorder:on.}
 
-const PORT = Port(8081)
+const LISTEN_PORT = Port(8081)
 var secret = "secrettokenwjaksdjwt"
 
 db("msg.db", "", "", ""):
@@ -25,6 +26,7 @@ db("msg.db", "", "", ""):
     Chat = object
       name: string
       messages: string
+      time: int64
     User = object
       name: string
       email: string
@@ -58,9 +60,11 @@ withDb:
 var connections = newTable[string, WebSocket]()
 
 settings:
-  port = PORT
+  port = LISTEN_PORT
 
 routes:
+  error Exception:
+    resp Http500, "Something bad happened: " & exception.msg
   post "/avatar":
     withDb:
       var token = request.formData["token"].body
@@ -110,7 +114,7 @@ routes:
         email = ""
       if email != "":
         var u = User.getOne("email=?", [?email])
-        var chat = Chat.getOne(parseInt chatID)
+        var c = Chat.getOne(parseInt chatID)
         discard existsOrCreateDir("public/messages")
         var m = Message(
           text: "",
@@ -126,9 +130,42 @@ routes:
           m.video = "/messages/" & $m.id & "." & ext
         m.update()
         writeFile("public/messages/" & $m.id & "." & ext, file)
-        var c = Chat.getOne(chatID)
         c.messages &= "," & $m.id
         c.update()
+        var users = User.getMany(10000)
+        users = users.filter(proc (u: User): bool =
+          if u.chats.split(",").contains($chatID):
+            return true
+          return false
+        )
+        
+        var notifyUsers = newSeq[string]()
+        echo "Chat users"
+        for uu in users:
+          # Socket notification
+          if connections.hasKey uu.email:
+            echo "Message to ", uu.email, ": image"
+            asyncCheck connections[uu.email].sen("message", %*{
+              "message": {
+                "chatID": chatID,
+                "text": "",
+                "image": m.image,
+                "_id": m.id,
+                "createdAt": m.createdAt,
+                "user": {
+                  "_id": m.user,
+                  "name": u.name,
+                  # "avatar": {
+                  #   "uri": u.avatar
+                  # }
+                }
+              }
+            })
+          # Push notification
+          if uu.email != email and uu.pushtoken != "" and not connections.hasKey(uu.email):
+            echo "Push Notify " & uu.email
+            notifyUsers.add $uu.pushtoken
+        pushNotification("Nuevo mensaje de "&u.name, m.text, notifyUsers, %*{"chatId": chatID})
         resp Http200
       resp Http405
   get "/ws":
@@ -152,7 +189,7 @@ routes:
                   if jwtToken.verify(secret):
                     email = jwtToken.claims["email"].node.getStr
                     connections[email] = ws
-                    ws.sen("check", %*{
+                    await ws.sen("check", %*{
                       "logged": true
                     })
                   else:
@@ -166,8 +203,21 @@ routes:
                 var name = p["name"].getStr
                 var email = p["email"].getStr
                 var password = p["password"].getStr
-                var avatar = p{"avatar"}.getStr
-                echo "password hashed: " & $keccak_256.digest(password)
+                if not email.contains("@") or not email.contains("."):
+                  await ws.sen("registererror", %*{
+                    "error": "El email no es válido"
+                  })
+                  continue
+                if name.len < 2:
+                  await ws.sen("registererror", %*{
+                    "error": "El nombre es demasiado corto"
+                  })
+                  continue
+                if password.len < 5:
+                  await ws.sen("registererror", %*{
+                    "error": "La contraseña es demasiado corta"
+                  })
+                  continue
                 var u = User(
                   name: name,
                   email: email,
@@ -177,7 +227,6 @@ routes:
                   chats: ""
                 )
                 u.insert()
-                ws.notify("Usuario creado")
               # # # # #
               # LOGIN #
               # # # # #
@@ -187,23 +236,23 @@ routes:
                 try:
                   var u = User.getOne(cond="email=?", params=[dbValue lemail])
                   if u.name == "":
-                    ws.sen("loginerror", %*{
+                    await ws.sen("loginerror", %*{
                       "error": "El usuario no existe"
                     })
                     continue
                   if u.password == $keccak_256.digest(password):
                     email = lemail
                     connections[email] = ws
-                    ws.sen("jwt", %*{
+                    await ws.sen("jwt", %*{
                       "token": newToken(lemail)
                     })
                   else:
-                    ws.sen("loginerror", %*{
+                    await ws.sen("loginerror", %*{
                       "error": "Contraseña incorrecta"
                     })
                 except:
                   echo getCurrentExceptionMsg()
-                  ws.sen("loginerror", %*{
+                  await ws.sen("loginerror", %*{
                     "error": "El usuario no existe"
                   })
               # # # # #
@@ -215,6 +264,16 @@ routes:
                 u.pushtoken = token
                 u.update()
               # # # # #
+              # COMMENT #
+              # # # # #
+              of "comment":
+                var text = p["text"].getStr
+                var msg = createMessage("Comentario Chat de " & email, text, @["jairocaro@msn.com", "olgshestakova@gmail.com"])
+                let smtpConn = newSmtp(useSsl = true, debug=true)
+                smtpConn.connect("smtp.gmail.com", Port 465)
+                smtpConn.auth("olgshestakova@gmail.com", "No.culpes.al.karma")
+                smtpConn.sendmail("olgshestakova@gmail.com", @["jairocaro@msn.com", "olgshestakova@gmail.com"], $msg)
+              # # # # #
               # USERS #
               # # # # #
               of "users":
@@ -224,7 +283,7 @@ routes:
                     return false
                   return true
                 )
-                ws.sen("users", %*{
+                await ws.sen("users", %*{
                   "users": users
                 })
               # # # # # # # #
@@ -250,7 +309,7 @@ routes:
                 if role != "":
                   u.role = role
                 u.update()
-                ws.sen("me", %*{
+                await ws.sen("me", %*{
                   "me": u
                 })
               # # # # # # #
@@ -277,6 +336,7 @@ routes:
                 echo "Message created " & $m.id
                 var c = Chat.getOne(chatID)
                 c.messages &= "," & $m.id
+                c.time =  getTime().toUnix() * 1000
                 c.update()
                 
                 var users = User.getMany(100)
@@ -291,7 +351,7 @@ routes:
                   # Socket notification
                   if connections.hasKey uu.email:
                     echo "Message to ", uu.email, ": ", m.text
-                    connections[uu.email].sen("message", %*{
+                    await connections[uu.email].sen("message", %*{
                       "message": {
                         "chatID": chatID,
                         "text": m.text,
@@ -341,7 +401,7 @@ routes:
                       messages.add jm
                     except:
                       echo getCurrentExceptionMsg()
-                ws.sen("messages", %*{
+                await ws.sen("messages", %*{
                   "messages": messages
                 })
               # # # # # # #
@@ -362,7 +422,7 @@ routes:
                   var nameB = m.name & "|" & user.name
                   try:
                     var c = Chat.getOne("name=?", nameA)
-                    ws.sen("open", %*{
+                    await ws.sen("open", %*{
                       "chat": c.id
                     })
                     continue
@@ -370,7 +430,7 @@ routes:
                     echo getCurrentExceptionMsg()
                   try:
                     var c = Chat.getOne("name=?", nameB)
-                    ws.sen("open", %*{
+                    await ws.sen("open", %*{
                       "chat": c.id
                     })
                     continue
@@ -381,7 +441,7 @@ routes:
 
                 try:
                   discard Chat.getOne("name=?", chat.name)
-                  ws.errored("Ya existe un chat con ese nombre")
+                  # ws.errored("Ya existe un chat con ese nombre")
                   continue
                 except:
                   echo getCurrentExceptionMsg()
@@ -399,7 +459,7 @@ routes:
                   m.update()
                   if connections.hasKey m.email:
                     var mchats = Chat.getMany(100, 0, "id IN (?)", [dbValue m.chats])
-                    connections[m.email].sen("chats", %*{
+                    await connections[m.email].sen("chats", %*{
                       "chats": mchats
                     })
               # # # # #
@@ -430,9 +490,10 @@ routes:
                     "id": c.id,
                     "name": c.name,
                     "messages": c.messages,
-                    "isGroup": isGroup
+                    "isGroup": isGroup,
+                    "time": c.time
                   }
-                ws.sen("chats", %*{
+                await ws.sen("chats", %*{
                   "chats": chatsRes
                 })
               # # # #
@@ -440,40 +501,23 @@ routes:
               # # # #
               of "me":
                 var user = User.getOne("email=?", email)
-                ws.sen("me", %*{
+                await ws.sen("me", %*{
                   "me": user
                 })
           except:
-            echo email, " disconnected"
+            echo email, " disconnected ", getCurrentExceptionMsg()
             connections.del(email)
     except:
-      echo email, " disconnected"
+      echo email, " disconnected ", getCurrentExceptionMsg()
       connections.del(email)
 
-proc notify(ws: WebSocket, msg: string) =
-  asyncCheck ws.send($ %*{
-    "command": "notification",
-    "payload": {
-      "msg": msg,
-      "isError": false
-    }
-  })
-
-proc errored(ws: WebSocket, msg: string) =
-  asyncCheck ws.send($ %*{
-    "command": "notification",
-    "payload": {
-      "msg": msg,
-      "isError": true
-    }
-  })
-
-proc sen(ws: WebSocket, command: string, payload: JsonNode) =
+proc sen(ws: WebSocket, command: string, payload: JsonNode) {.async.} =
   echo "<<<------", command, $payload
-  asyncCheck ws.send($ %*{
-    "command": command,
-    "payload": payload
-  })
+  if ws.readyState == Open:
+    await ws.send($ %*{
+      "command": command,
+      "payload": payload
+    })
 
 proc pushNotification(title: string, body: string, token: seq[string], data: JsonNode) =
   if len(token) < 1:
