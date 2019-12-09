@@ -1,6 +1,19 @@
 import jwt
 import norm/sqlite
-import ws, asyncdispatch, asynchttpserver, json, times, tables, nimcrypto, sequtils, os, strutils
+import 
+  ws, 
+  ws/jester_extra, 
+  asyncdispatch, 
+  asynchttpserver, 
+  json, 
+  times, 
+  tables, 
+  nimcrypto, 
+  sequtils, 
+  os, 
+  strutils, 
+  jester,
+  httpclient
 
 {.reorder:on.}
 
@@ -11,19 +24,21 @@ db("msg.db", "", "", ""):
   type
     Chat = object
       name: string
-      avatar: string
       messages: string
     User = object
       name: string
       email: string
       password: string
-      avatar: string
       pushtoken: string
       registration: int64
       chats: string
+      company: string
+      role: string
     Message = object
       text: string
       user: int
+      image: string
+      video: string
       createdAt: int64
     Notification = object
       user{.fk: User.}: int
@@ -42,11 +57,84 @@ withDb:
 
 var connections = newTable[string, WebSocket]()
 
-proc cb(req: Request) {.async, gcsafe.} =
-  if req.url.path == "/ws":
-    try:
-      var ws = await newWebSocket(req)
+settings:
+  port = PORT
+
+routes:
+  post "/avatar":
+    withDb:
+      var token = request.formData["token"].body
       var email = ""
+      try:
+        let jwtToken = token.toJWT()
+        if jwtToken.verify(secret):
+          email = jwtToken.claims["email"].node.getStr
+      except InvalidToken:
+        email = ""
+      if email != "":
+        var user = User.getOne("email=?", [?email])
+        discard existsOrCreateDir("public/")
+        writeFile("public/" & $user.id & ".png", request.formData["file"].body)
+        resp Http200
+      resp Http405
+  post "/chatavatar":
+    withDb:
+      var token = request.formData["token"].body
+      var chatID = request.formData["chatid"].body
+      var email = ""
+      try:
+        let jwtToken = token.toJWT()
+        if jwtToken.verify(secret):
+          email = jwtToken.claims["email"].node.getStr
+      except InvalidToken:
+        email = ""
+      if email != "":
+        var chat = Chat.getOne(parseInt chatID)
+        discard existsOrCreateDir("public/chats")
+        writeFile("public/chats/" & $chat.id & ".png", request.formData["file"].body)
+        resp Http200
+      resp Http405
+  post "/sendmessagefile":
+    withDb:
+      var ext = request.formData["ext"].body
+      var token = request.formData["token"].body
+      var chatID = request.formData["chatid"].body
+      var file = request.formData["file"].body
+      var kind = request.formData["type"].body
+      var email = ""
+      try:
+        let jwtToken = token.toJWT()
+        if jwtToken.verify(secret):
+          email = jwtToken.claims["email"].node.getStr
+      except InvalidToken:
+        email = ""
+      if email != "":
+        var u = User.getOne("email=?", [?email])
+        var chat = Chat.getOne(parseInt chatID)
+        discard existsOrCreateDir("public/messages")
+        var m = Message(
+          text: "",
+          image: "",
+          video: "", 
+          user: u.id,
+          createdAt: getTime().toUnix() * 1000
+        )
+        m.insert()
+        if kind == "image":
+          m.image = "/messages/" & $m.id & "." & ext
+        if kind == "video":
+          m.video = "/messages/" & $m.id & "." & ext
+        m.update()
+        writeFile("public/messages/" & $m.id & "." & ext, file)
+        var c = Chat.getOne(chatID)
+        c.messages &= "," & $m.id
+        c.update()
+        resp Http200
+      resp Http405
+  get "/ws":
+    var email = ""
+    try:
+      var ws = await newWebSocket(request)
       withDb:
         while ws.readyState == Open:
           let packet = await ws.receiveStrPacket()
@@ -84,7 +172,6 @@ proc cb(req: Request) {.async, gcsafe.} =
                   name: name,
                   email: email,
                   password: $keccak_256.digest(password),
-                  avatar: "",
                   pushtoken: "",
                   registration: getTime().toUnix,
                   chats: ""
@@ -97,9 +184,13 @@ proc cb(req: Request) {.async, gcsafe.} =
               of "login":
                 var lemail = p["email"].getStr
                 var password = p["password"].getStr
-                var pushtoken = p{"pushtoken"}.getStr
                 try:
                   var u = User.getOne(cond="email=?", params=[dbValue lemail])
+                  if u.name == "":
+                    ws.sen("loginerror", %*{
+                      "error": "El usuario no existe"
+                    })
+                    continue
                   if u.password == $keccak_256.digest(password):
                     email = lemail
                     connections[email] = ws
@@ -107,10 +198,22 @@ proc cb(req: Request) {.async, gcsafe.} =
                       "token": newToken(lemail)
                     })
                   else:
-                    ws.errored("Datos incorrectos")
+                    ws.sen("loginerror", %*{
+                      "error": "Contraseña incorrecta"
+                    })
                 except:
                   echo getCurrentExceptionMsg()
-                  ws.errored("Datos incorrectos")
+                  ws.sen("loginerror", %*{
+                    "error": "El usuario no existe"
+                  })
+              # # # # #
+              # LOGIN #
+              # # # # #
+              of "pushtoken":
+                var token = p["token"].getStr
+                var u = User.getOne("email=?", [?email])
+                u.pushtoken = token
+                u.update()
               # # # # #
               # USERS #
               # # # # #
@@ -123,6 +226,32 @@ proc cb(req: Request) {.async, gcsafe.} =
                 )
                 ws.sen("users", %*{
                   "users": users
+                })
+              # # # # # # # #
+              # MODIFY USER #
+              # # # # # # # #
+              of "modifyuser":
+                var id = p["id"].getInt
+                var name = p["name"].getStr
+                var email = p["email"].getStr
+                var password = p["password"].getStr
+                var company = p["company"].getStr
+                var role = p["role"].getStr
+
+                var u = User.getOne(id)
+                if name != "":
+                  u.name = name
+                if email != "":
+                  u.email = email
+                if password != "":
+                  u.password = $keccak_256.digest(password)
+                if company != "":
+                  u.company = company
+                if role != "":
+                  u.role = role
+                u.update()
+                ws.sen("me", %*{
+                  "me": u
                 })
               # # # # # # #
               # CHAT READ #
@@ -157,8 +286,11 @@ proc cb(req: Request) {.async, gcsafe.} =
                   return false
                 )
                 
+                var notifyUsers = newSeq[string]()
                 for uu in users:
+                  # Socket notification
                   if connections.hasKey uu.email:
+                    echo "Message to ", uu.email, ": ", m.text
                     connections[uu.email].sen("message", %*{
                       "message": {
                         "chatID": chatID,
@@ -174,6 +306,11 @@ proc cb(req: Request) {.async, gcsafe.} =
                         }
                       }
                     })
+                  # Push notification
+                  if uu.email != email and uu.pushtoken != "" and not connections.hasKey(uu.email):
+                    echo "Push Notify " & uu.email
+                    notifyUsers.add $uu.pushtoken
+                pushNotification("Nuevo mensaje de "&u.name, m.text, notifyUsers, %*{"chatId": chatID})
               # # # # # # #
               # MESSAGES  #
               # # # # # # #
@@ -183,12 +320,11 @@ proc cb(req: Request) {.async, gcsafe.} =
                 var msgs = c.messages.strip()
                 var messages: seq[JsonNode]
                 for mid in msgs.split(","):
-                  echo "mid", mid
                   if mid != "":
                     try:
                       var m = Message.getOne(parseInt mid)
-                      var u = User.getOne(m.user)
-                      messages.add %*{
+                      var u = User.getOne(m.user) # TODO: cache this
+                      var jm = %*{
                         "chatID": chatID,
                         "_id": m.id,
                         "text": m.text,
@@ -196,11 +332,13 @@ proc cb(req: Request) {.async, gcsafe.} =
                         "user": {
                           "_id": u.id,
                           "name": u.name,
-                          # "avatar": {
-                          #   "uri": u.avatar
-                          # }
                         }
                       }
+                      if m.image != "":
+                        jm["image"] = %m.image
+                      if m.video != "":
+                        jm["video"] = %m.video
+                      messages.add jm
                     except:
                       echo getCurrentExceptionMsg()
                 ws.sen("messages", %*{
@@ -212,11 +350,9 @@ proc cb(req: Request) {.async, gcsafe.} =
               of "newchat":
                 var name = p["name"].getStr
                 var members = p["members"]
-                var avatar = p{"avatar"}.getStr
                 var user = User.getOne("email=?", email)
                 var chat = Chat(
                   name: name,
-                  avatar: avatar,
                   messages: ""
                 )
 
@@ -225,14 +361,18 @@ proc cb(req: Request) {.async, gcsafe.} =
                   var nameA = user.name & "|" & m.name
                   var nameB = m.name & "|" & user.name
                   try:
-                    discard Chat.getOne("name=?", nameA)
-                    ws.errored("Chat already exists " & nameA)
+                    var c = Chat.getOne("name=?", nameA)
+                    ws.sen("open", %*{
+                      "chat": c.id
+                    })
                     continue
                   except:
                     echo getCurrentExceptionMsg()
                   try:
-                    discard Chat.getOne("name=?", nameB)
-                    ws.errored("Chat already exists " & nameB)
+                    var c = Chat.getOne("name=?", nameB)
+                    ws.sen("open", %*{
+                      "chat": c.id
+                    })
                     continue
                   except:
                     echo getCurrentExceptionMsg()
@@ -241,7 +381,7 @@ proc cb(req: Request) {.async, gcsafe.} =
 
                 try:
                   discard Chat.getOne("name=?", chat.name)
-                  ws.errored("Chat already exists " & chat.name)
+                  ws.errored("Ya existe un chat con ese nombre")
                   continue
                 except:
                   echo getCurrentExceptionMsg()
@@ -249,6 +389,9 @@ proc cb(req: Request) {.async, gcsafe.} =
 
                 user.chats &= (if user.chats == "": $chat.id else: "," & $chat.id)
                 user.update()
+
+                echo "New chat ", $chat
+                echo "Chats updated for ", user.email, ": ", user.chats
 
                 for mid in members:
                   var m = User.getOne("email=?", mid.getStr)
@@ -265,8 +408,14 @@ proc cb(req: Request) {.async, gcsafe.} =
               of "chats":
                 var chatsRes = newSeq[JsonNode]()
                 var user = User.getOne("email=?", email)
-                var chats = Chat.getMany(100, 0, "id IN (?)", [dbValue user.chats])
+                var params = newSeq[DbValue]()
+                var queryArgs = ""
+                for c in user.chats.split(","):
+                  params.add ?c
+                  queryArgs &= (if queryArgs=="": "?" else: ", ?")
+                var chats = Chat.getMany(100, 0, "id IN ("&queryArgs&")", params)
                 for c in chats.mitems:
+                  var isGroup = false
                   try:
                     var nameLeft = c.name.split("|")[0]
                     var nameRight = c.name.split("|")[1]
@@ -275,12 +424,13 @@ proc cb(req: Request) {.async, gcsafe.} =
                     elif user.name == nameRight:
                       c.name = nameLeft
                   except:
+                    isGroup = true
                     echo getCurrentExceptionMsg()
                   chatsRes.add %*{
+                    "id": c.id,
                     "name": c.name,
-                    "avatar": c.avatar,
                     "messages": c.messages,
-                    "users": "" # TODO users of the chat
+                    "isGroup": isGroup
                   }
                 ws.sen("chats", %*{
                   "chats": chatsRes
@@ -294,13 +444,11 @@ proc cb(req: Request) {.async, gcsafe.} =
                   "me": user
                 })
           except:
-            echo getCurrentExceptionMsg()
-            echo getCurrentException().getStackTrace()
-            ws.errored(getCurrentExceptionMsg())
+            echo email, " disconnected"
+            connections.del(email)
     except:
-      echo getCurrentExceptionMsg()
-      echo getCurrentException().getStackTrace()
-  await req.respond(Http404, "")
+      echo email, " disconnected"
+      connections.del(email)
 
 proc notify(ws: WebSocket, msg: string) =
   asyncCheck ws.send($ %*{
@@ -321,11 +469,26 @@ proc errored(ws: WebSocket, msg: string) =
   })
 
 proc sen(ws: WebSocket, command: string, payload: JsonNode) =
-  echo "<<<------", command, ($payload).substr(0, 100)
+  echo "<<<------", command, $payload
   asyncCheck ws.send($ %*{
     "command": command,
     "payload": payload
   })
+
+proc pushNotification(title: string, body: string, token: seq[string], data: JsonNode) =
+  if len(token) < 1:
+    return
+  let client = newHttpClient()
+  client.headers = newHttpHeaders({ "Content-Type": "application/json" })
+  var body = %*{
+    "to": token,
+    "title": title,
+    "body": body,
+    "data": data
+  }
+  echo "PushNotification body " & $body
+  let response = client.request("https://exp.host/--/api/v2/push/send", httpMethod = HttpPost, body = $body)
+  echo response.status & " " & response.body
 
 proc newToken(email: string): string =
   var token = toJWT(%*{
@@ -340,7 +503,3 @@ proc newToken(email: string): string =
   })
   token.sign(secret)
   return $token
-
-var server = newAsyncHttpServer()
-echo "Listening on port " & repr PORT
-waitFor server.serve(PORT, cb)
